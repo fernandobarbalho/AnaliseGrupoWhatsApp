@@ -1,0 +1,414 @@
+---
+title: "Análise Grupo de Debates Políticos"
+author: "Fernando Almeida Barbalho (fbarbalho@gmail.com)"
+output:
+   html_document:
+    theme: cerulean
+    toc: true
+    toc_float: true
+    code_folding: hide
+runtime: shiny     
+---
+
+<!--code_folding -> mostra ou não o código do R-->
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css">
+
+<!--?cones podem ser achados no seguinte endere?o: https://www.w3schools.com/icons/fontawesome_icons_intro.asp-->
+
+<style>
+h1 {
+  text-align:center
+}
+body {
+  background-color: "white";
+  text-align:justify
+}
+</style>
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+
+library(dplyr)
+library(tidytext)
+library(ggplot2)
+library(wordcloud)
+library(dygraphs)
+library(xts)
+library(tidyr)
+library(knitr)
+library(kableExtra)
+library(cluster)
+library(scales)
+
+load("conversas_trabalho.RData")
+
+
+```
+As presentes análises relacionam-se aos dados coletados em um grupo de WhatsApp cujo foco principal é discussão política. Ao se observar a série temporal do número de mensagem por dia percebeu-se uma grande influência do período pré-eleições presidenciais sobre o comportamento do grupo. Essa página tenta contar um pouco dessa influência através de dados e visualizações.
+
+Antes de explorar as análises alguns dados sobre o grupo:
+
+- formado por no máximo 13 amigos que conviveram na mesma escola secundarista em meados da década de 1980
+
+- moram atualmente em cinco UFs distintas, sendo duas do Nordeste, uma do Sudoeste e outras duas do Centro-Oeste
+
+- A maior parte dos membros é formada por servidores públicos, professores e profissionais liberais
+
+# Análise da série temporal de número de mensagens diárias
+
+As análises do grupo de debates políticos começam com uma visualização da distribuição do número de mensagens diárias desde o primeiro dia do grupo até o o final de outubro de 2018, que marca o final das eleições presidenciais de 2018.
+O período de visualização pode ser ajustado através do cursor logo abaixo do gráfico.
+
+## Gráfico inicial série temporal de número de mensagens diárias
+
+```{r serie_temporal}
+
+conversas_trabalho <- conversas_trabalho %>%
+                       mutate(data= paste0("20",substring(data_hora,7,8),"-",substring(data_hora,4,5),"-",substring(data_hora,1,2)))
+  
+
+analise_mensagem_dia <- conversas_trabalho %>%
+                        group_by(data) %>%
+                        summarise(
+                          numero_mensagem = NROW(mensagem)
+                        )
+
+analise_mensagem_dia <- analise_mensagem_dia[-c(1:4),]
+
+
+
+#analise_mensagem_dia %>% ggplot(mapping = aes(x=data, y=numero_mensagem)) +
+                         #geom_bar(stat = "identity")
+
+
+y_min <- min(analise_mensagem_dia$numero_mensagem)
+y_max <- max(analise_mensagem_dia$numero_mensagem)
+
+inds <- seq(as.Date("2016-04-12"), as.Date("2018-11-02"), by = "day")
+
+ts_mensagem <- xts(analise_mensagem_dia, frequency = 365, order.by = as.Date(analise_mensagem_dia$data))
+
+
+dygraph(ts_mensagem,main = "Número de mensagens diárias") %>%
+  dyRangeSelector() %>%
+  dyAxis(name= "y",valueRange = c(y_min,y_max)) %>%
+  dyLegend(show = "follow", hideOnMouseOut = TRUE, width = 200)%>%
+  dyOptions( drawGrid = FALSE)%>%
+  dyHighlight(highlightCircleSize = 5) 
+
+```  
+
+No gráfico acima há uma grande ocorrência de outliers ao longo do período de análise. É fácil notar ainda que a partir de um determinado momento do final do terceiro trimestre de 2018 a curva está fortemente marcada por valores outliers. Essa faixa do gráfico parece estar relacionada com um período em que se discutiu predominantemente as eleições presidenciais. As próximas análises vão ajudar a identificar exatamente o ponto em que começa esse debate mais específico.
+
+## Box-Plot distribuição das quantidades diárias de número de mensagens
+
+A tabela e o gráfico abaixo mostram a influência dos outliers sobre a distribuição do número de mensagens diárias
+
+```{r box_plot}
+######### Box-Plot
+resumo <- data.frame("Media"=mean(analise_mensagem_dia$numero_mensagem),
+                     "Mínimo" = min(analise_mensagem_dia$numero_mensagem),
+                     "Primeiro_Quartil" = quantile(analise_mensagem_dia$numero_mensagem)[2],
+                     "Mediana"= median(analise_mensagem_dia$numero_mensagem),
+                     "Terceiro_Quartil" = quantile(analise_mensagem_dia$numero_mensagem)[4],
+                     "Maximo"=max(analise_mensagem_dia$numero_mensagem))
+
+resumo %>% kable( col.names = c("Média", "Mínimo", "Primeiro Quartil", "Mediana", "Terceiro Quartil", "Máximo"), row.names = FALSE, format = "html") %>%
+   kable_styling(bootstrap_options = c("striped", "hover"))
+
+limite_outliers <- resumo$Terceiro_Quartil *1.5
+
+outliers<- analise_mensagem_dia %>% 
+           filter(numero_mensagem >= limite_outliers) %>%
+           mutate(data_numero = as.numeric(as.POSIXlt(data, format="%Y-%m-%d", origin = "1899-12-30")))     %>%
+          mutate(data_numero = replace(data_numero,data=="2018-10-21",1540004400 + 1540004400- 1539918000)) %>%
+          mutate(data_numero = data_numero /10^5)
+
+set.seed(30)
+pam_clusters<-pam(outliers$data_numero, k = 4)
+
+df_pam_cluster <- data.frame("data_numero" = pam_clusters$data[,1], "cluster"=pam_clusters$clustering)
+
+
+outliers <- outliers %>% inner_join(df_pam_cluster)
+
+data_inicio_eleicoes <- outliers %>%
+                        filter(cluster == 4) %>%
+                        summarise(data_min = min(data))
+
+analise_mensagem_dia %>% ggplot() +
+                         geom_boxplot(aes(y=numero_mensagem))     +
+  theme(panel.grid = element_blank(),
+        panel.background = element_blank(),
+        axis.text.x = element_blank(),
+        axis.title = element_blank(),
+        axis.ticks.x = element_blank()) + 
+  annotate("rect",xmin= -.05, xmax = .05, ymin=45, ymax = max(analise_mensagem_dia$numero_mensagem), alpha= .2 ) +
+annotate("text",label="128 outliers: 15% das datas analisadas",x= 0, y = 300 )
+```
+
+Pela tabela percebe-se que a média é fortemente influenciada pelos vários outliers já que seu valor é quase o dobro da mediana. Observa-se ainda que pelo valor do terceiro quartil, em 75% dos dias analisados foram escritas entre 1 e 30 mensagens por dia. No entanto, a quantidade e as características dos outliers vistos no gráfico de box-plot parecem contar uma história à parte do que ocorre no uso comum do grupo.
+
+
+## Box-Plot distribuição das quantidades diárias de número de mensagens
+
+Como o período final do terceiro trimestre é marcado por um elevado número de outliers, resolveu-se destacar esse período como uma faixa de análise separada. Esse é o período que foi considerado como o de discussões do processo eleitoral. Para identificar exatamente a data que marca o início desse debate, foi feita uma análise de clusters sobre os outliers pelo método k-mediods procurando buscar as datas mais próximas ao período eleitoral. Chegou-se à data de 10/08/2018 como o marco do início mais intenso das disussões sobre eleições presidenciais. A partir daí foram feitas novas análises considerando esse marco, como a representada pelo gráfico abaixo.
+
+```{r box_plot_2}
+analise_mensagem_dia_cluster <- analise_mensagem_dia
+analise_mensagem_dia_cluster$cluster_eleicoes <- "Fora Período Eleitoral"
+
+analise_mensagem_dia_cluster$cluster_eleicoes[analise_mensagem_dia_cluster$data>= data_inicio_eleicoes$data_min] <- "Período Eleitoral"
+
+
+analise_mensagem_dia_cluster %>% ggplot() +
+                         geom_boxplot(aes(y=numero_mensagem, fill = cluster_eleicoes))     +
+  theme(panel.grid = element_blank(),
+        panel.background = element_blank(),
+        axis.text.x = element_blank(),
+        axis.title = element_blank(),
+        axis.ticks.x = element_blank())  
+
+
+```
+
+O gráfico acima mostra como se caracterizam dois períodos distintos de análise. Um período pré disputas eleitorais com uma distribuição de frequência de mensagens diárias bem inferior ao período eleitoral, que por sua vez é marcado por intenso fluxo de mensagens e com todas as estatísticas bem superiores ao período normal de uso do grupo. Para se ter um ideia de quanto se diferenciam esses dois períodos, o do debate eleitoral é formado por apenas 10% de toda a base analisada, mas compreende 40% dos outliers. Além disso esse período é formado em 61% das datas por pontos considerados outliers, tendo como referência a série temporal completa.
+
+## Gráfico completo com anotações
+
+A partir das análises de outliers feitas anteriormente é possível remontar o primeiro gráfico mostrado nessa análise trazendo agora algumas anotações a mais.
+
+```{r grafico_completo}
+######### dyGraph com anotações
+
+
+
+dygraph(ts_mensagem,main = "Número de mensagens diárias") %>%
+  dyRangeSelector() %>%
+  dyAxis(name= "y",valueRange = c(y_min,y_max)) %>%
+  dyLegend(show = "follow", hideOnMouseOut = TRUE, width = 200)%>%
+  dyOptions( drawGrid = FALSE)%>%
+  dyHighlight(highlightCircleSize = 5) %>%
+  dyAnnotation("2016-04-17", text = "Impeachment", width = 90,height = 20) %>%
+  dyAnnotation("2016-08-31", text = "Vice Janot", width = 77,height = 20) %>%
+  dyAnnotation("2017-05-18", text = "Malas", width = 50,height = 20) %>%
+  dyAnnotation("2018-04-07", text = "Prisão Lula", width = 80,height = 20) %>%
+  dyAnnotation("2018-10-07", text = "1º turno", width = 70,height = 20) %>%
+  dyAnnotation("2018-10-28", text = "2º turno", width = 70,height = 20) %>%
+  dyShading(from = "2018-08-10", to = "2018-10-28", color = "Red")
+
+
+```
+
+A nova versão do gráfico da série temporal já mostra a faixa de datas que está associada ao período eleitoral. Vê-se ainda que vários outros outliers são identificados fora dessa faixa. Esses pontos estão associados a eventos importantes para o grupo. Algumas dessas datas mereceram anotações no gráfico.
+
+# As eleições e os efeitos nas palavras mais frequentes
+
+Para além da frequência das mensagens, procurou-se observar o efeito das eleiçõs sobre o vocabulário do grupo. Os próximos gráficos representam essa análise.
+
+## Identificação das palavras mais frequentes
+
+Considerando todo o período analisado, as palavras mais frequentes foram as que estão visualizadas no gráfico abaixo.
+
+```{r trata_palavras_requentes}
+######################Descoberta das palavras mais frequentes
+
+analise_mensagem <- conversas_trabalho %>%
+  unnest_tokens(palavra,mensagem,to_lower = TRUE) %>%
+  count(usuario, palavra, sort = TRUE) %>%
+  ungroup()
+
+total_palavras <- analise_mensagem %>%
+          group_by(usuario) %>%
+  summarize(total=sum(n))
+
+usuario_validos <- total_palavras$usuario[c(7:12,14:21)]
+
+total_palavras <- total_palavras %>%
+                  filter(usuario %in% usuario_validos)
+
+analise_mensagem <- inner_join(analise_mensagem, total_palavras)
+
+
+analise_mensagem <- analise_mensagem %>%
+   bind_tf_idf(palavra, usuario, n)
+
+
+
+stop_words_grupo <- unique(c(unique(analise_mensagem$palavra[analise_mensagem$idf==0]), stopwords::stopwords("pt")))
+
+stop_words_grupo <- c(stop_words_grupo,c('mídia','arquivo','oculto','https','http','q','tão','aí','10','1','tá','2018'))
+
+
+
+analise_mensagem_filtro <- analise_mensagem %>%
+                       anti_join(data_frame(palavra = stop_words_grupo))
+
+
+analise_mensagem_palavras <- conversas_trabalho %>% unnest_tokens(palavra,mensagem, to_lower = TRUE)
+
+analise_mensagem_palavras <- analise_mensagem_palavras %>%
+                       anti_join(data_frame(palavra = stop_words_grupo))
+
+palavras_sel <- c("lula","pt","bolsonaro","golpe","haddad","temer","democracia","politica","esquerda","dilma","povo","poder")
+
+
+grafico_segmento<- analise_mensagem_palavras %>%
+  count(palavra, sort = TRUE) %>%
+  filter(n > 300) %>%
+  mutate(palavra = reorder(palavra, n))
+  
+  
+grafico_segmento %>% ggplot(aes(x=palavra, y=n)) +
+    geom_segment( aes(x=palavra, xend=palavra, y=0, yend=n ), color=ifelse(grafico_segmento$palavra %in% palavras_sel, "orange", "grey"), size=ifelse(grafico_segmento$palavra %in% palavras_sel, 0.7, 0.5) ) +
+    geom_point( color=ifelse(grafico_segmento$palavra %in% palavras_sel, "orange", "grey"), size=ifelse(grafico_segmento$palavra %in% palavras_sel, 3, 2) ) +
+    theme_light(base_size = 9, base_family = "") +
+    coord_flip() +
+    theme(
+      legend.position="none",
+      panel.grid.major.y = element_blank(),
+      axis.ticks.length = unit(.99, "cm"),
+      panel.border = element_blank(),
+      axis.ticks.y = element_blank()
+    ) +
+    xlab("") 
+  
+
+```
+
+As palavras destacadas em laranja foram as selecionadas para uma análise mais aprofundada por representarem melhor o que está na essência de debate do grupo. Tais análises são relacionadas à tendência de utilização dos vocábulos priorizados durante todo o período de debates. Os dois próximos gráficos mostram essas tendências. 
+
+## Gráfico tendências das palavras
+
+```{r grafico_linha_tendencias}
+
+###########Construção do gráfico de análise de tendência de palavras
+analise_tendencia_palavra<-analise_mensagem_palavras %>%
+  mutate(data= paste0("20",substring(data_hora,7,8),"-",substring(data_hora,4,5),"-","01")) %>%
+  filter(palavra %in% palavras_sel,
+         data <= "2018-10-01") %>%
+  group_by(substr(data,1,7), palavra) %>%
+  summarise(quant_pal = n())
+
+names(analise_tendencia_palavra)[1]<- "data"
+
+  
+
+analise_tendencia_palavra <- analise_tendencia_palavra[-c(1:14),]  
+
+analise_tendencia_palavra <- analise_tendencia_palavra %>%
+                             mutate(data= paste0(data,"-01"))
+
+
+analise_tendencia_palavra <- analise_tendencia_palavra %>% spread(key = palavra, value = quant_pal)
+
+
+
+analise_mapa_calor <- analise_tendencia_palavra
+
+
+
+y_min <- 0
+y_max <- max(analise_tendencia_palavra[,2:13])
+
+ts_tendencia <- xts(analise_tendencia_palavra, frequency = 12, order.by = as.Date(analise_tendencia_palavra$data))
+
+
+dygraph(ts_tendencia,main = "Evolução de citação") %>%
+  dyRangeSelector() %>%
+  dyAxis(name= "y",valueRange = c(y_min,y_max)) %>%
+  dyLegend(show = "always", hideOnMouseOut = TRUE, width = 300)%>%
+  dyOptions( drawGrid = FALSE)%>%
+  dyHighlight(highlightCircleSize = 5,
+              highlightSeriesBackgroundAlpha = 0.2,
+              hideOnMouseOut = FALSE)
+
+```
+Para o gráfico acima, recomenda-se parar o mouse sobre um ponto da curva que se deseja explorar melhor para destacar toda a série temporal associado a esse ponto.
+
+## Mapa de calor inlcuindo eleições
+
+```{r mapa_calor_eleicoes}
+analise_mapa_calor[is.na(analise_mapa_calor)] <-0
+
+analise_mapa_calor <- analise_mapa_calor %>% gather("palavra","quant_pal",2:13)
+
+analise_mapa_calor <- analise_mapa_calor %>%
+                       mutate(data=paste0(substr(data,1,8),"01")) %>%
+                       group_by(data, palavra) %>%
+                       summarise(quantidade_mes = sum(quant_pal))
+
+
+analise_mapa_calor %>% ggplot(aes(x=data,y=palavra)) +
+geom_tile(aes(fill = sqrt(quantidade_mes)),color= "white") + 
+  scale_fill_gradient2( high = "red", low = "white")+# mid="white", midpoint = median(sqrt(analise_mapa_calor$quantidade_mes)))+
+  theme(axis.text.x = element_blank(),
+        axis.title.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        legend.title = element_blank(),
+        legend.text = element_blank())
+
+```
+
+Observa-se nos dois gráficos que os principais assuntos do período eleitoral, Bolsonaro e Haddad, praticamente não existiam antes de Agosto de 2018. Na verdade o único vocábulo consistente durante todo o período de análise foi Lula, que atingiu pico em abril de 2018. Outros tópicos importantes, como Dilma, Temer e Golpe perderam força ao longo do período de análise. 
+Observa-se ainda, principalmente pelo mapa de calor, que praticamente todos os vocábulos tiveram suas frequências aumentadas nos meses de período eleitoral, tal como ocorreu com Bolsonaro e Haddad.
+
+
+
+
+```{r palavras_sem_eleicoes}
+# library(lubridate)
+# 
+# grafico_segmento<- analise_mensagem_palavras
+# names(grafico_segmento)[3]<- "data_analise"
+# 
+# grafico_segmento <- grafico_segmento[grafico_segmento$data_analise<"2018-0-10",]
+# 
+# grafico_segmento <- grafico_segmento %>%  
+# count(palavra, sort = TRUE) %>%
+#   filter(n > 150) %>%
+#   mutate(palavra = reorder(palavra, n))
+#   
+#   
+# grafico_segmento %>% ggplot(aes(x=palavra, y=n)) +
+#     geom_segment( aes(x=palavra, xend=palavra, y=0, yend=n ), color=ifelse(grafico_segmento$palavra %in% palavras_sel, "orange", "grey"), size=ifelse(grafico_segmento$palavra %in% palavras_sel, 0.7, 0.5) ) +
+#     geom_point( color=ifelse(grafico_segmento$palavra %in% palavras_sel, "orange", "grey"), size=ifelse(grafico_segmento$palavra %in% palavras_sel, 3, 2) ) +
+#     theme_light(base_size = 9, base_family = "") +
+#     coord_flip() +
+#     theme(
+#       legend.position="none",
+#       panel.grid.major.y = element_blank(),
+#       axis.ticks.length = unit(.99, "cm"),
+#       panel.border = element_blank(),
+#       axis.ticks.y = element_blank()
+#     ) +
+#     xlab("") 
+# 
+# 
+# analise_mapa_calor %>%
+#   filter(data < "2018-08-01") %>% 
+#   ggplot(aes(x=data,y=palavra)) +
+# geom_tile(aes(fill = sqrt(quantidade_mes)),color= "white") + 
+#   scale_fill_gradient2( high = "red", low = "blue", mid="white", midpoint = median(sqrt(analise_mapa_calor$quantidade_mes)))+
+#   theme(axis.text.x = element_blank(),
+#         axis.title.x = element_blank(),
+#         axis.ticks.x = element_blank(),
+#         legend.title = element_blank(),
+#         legend.text = element_blank())
+# 
+
+  
+```
+
+# Conclusões e Futuras análises
+
+Como pôde ser percebido pelos gráficos há uma clara indicação de que o período eleitoral provocou o grupo a um debate mais frequente. Dessa maior frequência há uma afirmação de um vocabulário que era debatido ao longo do tempo, bem como a inclusão de vocábulos diretamente relacionados à disputa, no caso Bolsonaro e Haddad os principais candidatos nas eleições de 2018.
+
+Futuras análises podem ser feitas buscando se comparar os achados das análises deste trabalho com os dados que podem ser obtidos por ferramentas como Facebook e Google. Pode-se inferir daí se o grupo de alguma forma segue os mesmos padrões de comportamento da população em geral.
+
+Outras análises poderiam se focar de como as principais palavras são associadas a outras, de forma a poder avaliar sentimentos e explicitar melhor o pensamento do grupo sobre as suas principais questões.
+
+Por fim, talvez seja importante analisar o papel de cada um dos membros do grupo. Obervando posições, influências e conteúdos.
+
